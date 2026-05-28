@@ -2370,10 +2370,14 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
         for (int j = 0; j < QK_TQ3_0; j++) {
             sum_sq += block_x[j] * block_x[j];
         }
-        float rms = sqrtf(sum_sq / QK_TQ3_0);
-        if (rms < 1e-10f) { rms = 1.0f; } // avoid division by zero
+        if (sum_sq < 1e-20f) {
+            y[i].d = GGML_FP32_TO_FP16(0.0f);
+            memset(y[i].qs, 0, sizeof(y[i].qs));
+            continue;
+        }
 
-        y[i].d = GGML_FP32_TO_FP16(rms);
+        const float orig_norm = sqrtf(sum_sq);
+        const float rms = orig_norm / sqrtf(QK_TQ3_0);
 
         // 2. Normalize to unit variance
         float normalized[QK_TQ3_0];
@@ -2404,6 +2408,23 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
             qp[1] = (idx[2] >> 2) | (idx[3] << 1) | (idx[4] << 4) | (idx[5] << 7);
             qp[2] = (idx[5] >> 1) | (idx[6] << 2) | (idx[7] << 5);
         }
+
+        // 6. Norm correction: preserve the original block norm after reconstruction.
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            rotated[j] = TQ3_0_CENTROIDS[indices[j]];
+        }
+
+        float reconstructed[QK_TQ3_0];
+        tq3_0_rht_inverse(rotated, reconstructed);
+
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            recon_sq += reconstructed[j] * reconstructed[j];
+        }
+
+        const float recon_norm = sqrtf(recon_sq);
+        const float scale = recon_norm > 1e-10f ? (orig_norm / recon_norm) : 0.0f;
+        y[i].d = GGML_FP32_TO_FP16(scale);
     }
 }
 
